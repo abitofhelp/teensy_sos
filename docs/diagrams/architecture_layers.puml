@@ -1,0 +1,104 @@
+@startuml architecture_layers
+!theme plain
+skinparam linetype ortho
+skinparam nodesep 70
+skinparam ranksep 90
+skinparam componentStyle rectangle
+
+title teensy_sos - SOS Morse RGB Demo\nHybrid DDD / Clean / Hexagonal (Ports & Adapters)\nOne canonical library (lib/TeensySos), two thin CLI composition roots
+
+' ---------------------------------------------------------------------------
+package "Composition Roots (thin)" as Root #FFE0B2 {
+  component "src/main.cpp\n(PlatformIO CLI)" as Main
+  component "teensy_sos.ino\n(Arduino CLI)" as Ino
+  note bottom of Main
+    Two thin roots, one per command-line frontend.
+    Each owns the concrete adapters and wires them
+    into the controller (setup() = bring-up, loop() = poll()).
+    **No SOS logic here** - both compile the SAME
+    canonical library (lib/TeensySos), so they produce
+    identical firmware.
+  end note
+}
+
+' ---------------------------------------------------------------------------
+package "Application Layer  (sos::app)" as App #FFF3E0 {
+  component "SosController<Led, Clock>" as Ctl
+  interface "<<concept>> LedPort" as LedPort
+  interface "<<concept>> ClockPort" as ClockPort
+  note bottom of Ctl
+    Header-only template, **Arduino-free**.
+    Owns the timed SOS program, steps it
+    non-blocking against the clock, drives
+    the LED. Depends only on ports + Domain.
+  end note
+}
+
+' ---------------------------------------------------------------------------
+package "Domain Layer  (sos::domain)" as Dom #E8F5E9 {
+  component "Color / Symbol / Segment" as Values
+  component "MorseEncoder\n(build_sos -> Segment[])" as Encoder
+  note bottom of Values
+    Pure Morse vocabulary + timing ratios.
+    build_sos() expands S-O-S into a flat,
+    host-testable program. **Depends on nothing.**
+  end note
+}
+
+' ---------------------------------------------------------------------------
+package "Infrastructure Layer (Adapters)  (sos::platform)" as Infra #E3F2FD {
+  component "TeensyRgbLedAdapter" as LedAdapter
+  component "TeensyClock" as ClockAdapter
+  note bottom of LedAdapter
+    Driven adapters (Teensy core).
+    pinMode/digitalWriteFast on R/G/B pins;
+    ::millis(). The only Arduino-aware code.
+  end note
+}
+
+' ---------------------------------------------------------------------------
+package "Shared Kernel  (sos::core)" as Kernel #F3E5F5 {
+  component "Core" as Core
+  note bottom of Core
+    Result<T,E>, Option<T>,
+    FixedQueue<T,N> (SPSC, no heap).
+    **Available starter component - NOT used by
+    the trivial SOS demo.** Real firmware built
+    from this template reaches for it.
+  end note
+}
+
+' --- Composition wiring (both roots wire the same canonical library) --------
+Main --> Ctl
+Main --> LedAdapter
+Main --> ClockAdapter
+Ino --> Ctl
+Ino --> LedAdapter
+Ino --> ClockAdapter
+
+' --- Ports used by the application (inward dependency) ---------------------
+Ctl --> LedPort
+Ctl --> ClockPort
+Ctl ..> Values
+Ctl ..> Encoder
+Encoder ..> Values
+
+' --- Adapters realize the ports (outer implements inner) -------------------
+LedAdapter ..|> LedPort
+ClockAdapter ..|> ClockPort
+LedAdapter ..> Values
+
+' --- The shared kernel is AVAILABLE to all, but the trivial SOS demo uses none
+'     of it. Shown detached on purpose - a real domain built from this template
+'     would depend on it.
+
+legend right
+  |= Rule | Direction |
+  | Composition roots (both frontends) | may depend on all layers |
+  | Infrastructure -> Application (ports) + Domain | inward only |
+  | Application -> Domain | inward only |
+  | Domain -> nothing | pure |
+  | No lateral adapter <-> adapter dependency ||
+endlegend
+
+@enduml

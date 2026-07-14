@@ -1,0 +1,39 @@
+@startuml run_sequence
+!theme plain
+skinparam sequenceMessageAlign center
+
+title Runtime flow\nComposition root wires the adapters; the controller steps the SOS program
+
+actor "Arduino core" as Core
+participant "composition root\n(main.cpp / .ino)" as Main
+participant "SosController" as Ctl
+participant "TeensyRgbLedAdapter\n(LedPort)" as Led
+participant "TeensyClock\n(ClockPort)" as Clk
+
+== Bring-up (setup) ==
+Core -> Main : setup()
+Main -> Led : begin()  // pins OUTPUT, LED dark
+Main -> Ctl : begin()
+Ctl -> Ctl : build_sos(program)
+Ctl -> Clk : millis()
+Ctl -> Led : set(Red)   // first segment (S dot)
+
+== Steady state (loop, non-blocking) ==
+loop every loop() iteration
+  Core -> Main : loop()
+  Main -> Ctl : poll()
+  Ctl -> Clk : millis()
+  alt current segment's hold time elapsed
+    Ctl -> Ctl : advance to next segment (wrap at end)
+    Ctl -> Led : set(next color)
+  else still holding
+    note right of Ctl : no LED change
+  end
+end
+
+note over Ctl, Clk
+  Elapsed time uses unsigned 32-bit subtraction,
+  so timing stays correct across the millis() rollover.
+end note
+
+@enduml

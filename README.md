@@ -3,8 +3,8 @@
 A clean-room **starter / reference project** for Teensy 4.1 firmware, built with a
 hexagonal (ports & adapters) / DDD / Clean hybrid architecture in C++20 — and a
 **cross-platform, restricted-network build process** for macOS, Linux, and Windows,
-online or air-gapped (macOS and Linux validated; Windows/MSYS2 implemented and pending
-its own validation).
+online or air-gapped (macOS validated on hardware; Linux and Windows/MSYS2 build
+support implemented, their validation pending).
 
 The demo domain is deliberately trivial and **entirely non-proprietary**: blink
 **SOS** in Morse on an RGB LED (S in red, O in green, S in blue). The value of the
@@ -44,7 +44,7 @@ through a thin composition root — there is no duplicated domain/application lo
 
 | Layer | Namespace | Files (in `lib/TeensySos/src/`) | Depends on |
 |---|---|---|---|
-| Shared kernel | `sos::core` | `Core.hpp` (Option / Result / FixedQueue) | nothing (`<cstdint>`) |
+| Shared kernel | `sos::core` | `Core.hpp` (Option / Result / FixedQueue) | nothing (`<cstdint>`/`<cstddef>`/`<atomic>`) |
 | Domain | `sos::domain` | `Domain.hpp`, `MorseEncoder.hpp` | nothing |
 | Application | `sos::app` | `Ports.hpp` (concepts), `SosController.hpp` | domain |
 | Infrastructure | `sos::platform` | `TeensyRgbLedAdapter.hpp`, `TeensyClock.hpp` | Arduino |
@@ -60,7 +60,9 @@ through a thin composition root — there is no duplicated domain/application lo
 
 Two command-line frontends compile the **same canonical implementation**
 (`lib/TeensySos/`). PlatformIO is the established default; the Arduino CLI is a
-supported second frontend. Both produce identical firmware (`FLASH code:9384`).
+supported second frontend. Both compile the same canonical implementation to the
+same reported code size (`FLASH code:9384`) and run the SOS pattern identically on
+hardware.
 
 | Frontend | Status | Validated on hardware (Teensy 4.1) |
 |---|---|---|
@@ -68,12 +70,21 @@ supported second frontend. Both produce identical firmware (`FLASH code:9384`).
 | **Arduino CLI** | Supported | ✅ build · upload · physical execution |
 | **Arduino IDE** | Planned | ⏳ integration & validation pending (separate slice) |
 
+## Prerequisites
+
+- **Host tests only:** any C++20 compiler (`make test`) — no board and no embedded toolchain.
+- **On-device runs (hardware):** a Teensy 4.1, a common-cathode RGB LED, three
+  current-limiting resistors, and a breadboard — wiring in [`docs/HARDWARE.md`](docs/HARDWARE.md).
+- **PlatformIO CLI:** `pipx install platformio` (or `brew install platformio`).
+- **Arduino CLI:** `brew install arduino-cli` plus the Teensy core (`teensy:avr`) —
+  `make arduino-check` confirms the setup; install steps are in [`docs/BUILD.md`](docs/BUILD.md).
+
 ## Quick start
 
 Host tests need no board and no embedded toolchain:
 
 ```sh
-make test          # host unit tests: 65 checks, 0 failures (no board, no toolchain)
+make test          # host unit tests: 79 checks, 0 failures (no board, no toolchain)
 ```
 
 **PlatformIO CLI** (default):
@@ -107,12 +118,13 @@ be validated separately.
 | Doc | What it covers |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The hybrid DDD/Clean/Hexagonal pattern, with diagrams and the benefits |
-| [`docs/BUILD.md`](docs/BUILD.md) | The four build paths (open / authenticated-proxy / offline bundle / `.hex` transfer) |
+| [`docs/BUILD.md`](docs/BUILD.md) | The four build/transfer paths (open / authenticated-proxy / offline bundle / `.hex` transfer) and the Arduino CLI workflow |
 | [`docs/PACKAGE_INVENTORY.md`](docs/PACKAGE_INVENTORY.md) | Resolved PlatformIO package set: exact versions + content digests for the pinned platform |
 | [`docs/HARDWARE.md`](docs/HARDWARE.md) | Wiring, resistor selection & brightness balancing, reference photos |
 | [`docs/HARDWARE_VALIDATION.md`](docs/HARDWARE_VALIDATION.md) | End-to-end bench proof: build → flash → running SOS |
 | [`docs/DEBUGGING.md`](docs/DEBUGGING.md) | Host debugging (`make debug-host`) and the firmware debug build (`make build-debug`) |
 | `docs/specs/` | SRS / SDS / STG skeletons (Typst → PDF) — starter scaffold |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history (Keep a Changelog + Semantic Versioning + Conventional Commits) |
 
 Build the diagrams and PDFs with `make diagrams` and `make specs`. `make verify-media`
 re-checks all committed media for residual GPS/owner/serial metadata as a pre-share gate.

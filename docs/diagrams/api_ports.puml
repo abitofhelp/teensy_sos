@@ -1,0 +1,79 @@
+@startuml api_ports
+!theme plain
+skinparam linetype ortho
+skinparam nodesep 55
+skinparam ranksep 95
+
+title Ports & Adapters\nThe controller depends only on two concepts - hardware is just one realization
+
+' ===========================================================================
+' APPLICATION: the controller depends only on the universal ports below.
+' It contains NO knowledge of Arduino, pins, or a specific clock.
+' ===========================================================================
+class "SosController<Led, Clock>" as Ctl #FFF3E0 {
+  + SosController(Led&, Clock&, unit_ms = 200)
+  + begin() : void
+  + poll() : void
+}
+
+package "Ports (Application)  ::  hardware-agnostic" as Ports #FFFDE7 {
+  interface "<<concept>>\nLedPort\n(single-color display)" as LedPort {
+    + set(Color) : void
+  }
+  interface "<<concept>>\nClockPort\n(monotonic ms clock)" as ClockPort {
+    + millis() : uint32_t
+  }
+}
+
+Ctl ..> LedPort : uses
+Ctl ..> ClockPort : uses
+
+note top of LedPort
+  A LedPort shows one **Color** at a time.
+  A Teensy RGB LED is one realization; a fake
+  that records colors satisfies the same contract
+  with NO change to the application.
+end note
+
+' ===========================================================================
+' INFRASTRUCTURE + TEST: adapters realize the ports. The device adapters and
+' the test doubles satisfy the SAME concepts - that is why the controller is
+' unit-testable without hardware.
+' ===========================================================================
+package "Adapters (Infrastructure)" as Infra #E3F2FD {
+  class "TeensyRgbLedAdapter\n(R->18, G->14, B->15)" as LedAdapter {
+    -- realizes LedPort --
+  }
+  class "TeensyClock\n(::millis)" as ClockAdapter {
+    -- realizes ClockPort --
+  }
+}
+
+package "Test doubles (host)" as Test #ECEFF1 {
+  class "<<test>>\nFakeLed\n(records set() colors)" as FakeLed {
+    -- realizes LedPort --
+  }
+  class "<<test>>\nFakeClock\n(host-set millis)" as FakeClock {
+    -- realizes ClockPort --
+  }
+}
+
+LedAdapter ..|> LedPort
+ClockAdapter ..|> ClockPort
+FakeLed ..|> LedPort
+FakeClock ..|> ClockPort
+
+note bottom of Test
+  test_sos_controller.cpp drives the controller
+  with FakeLed + FakeClock and checks the emitted
+  color sequence against the SOS program - no board.
+end note
+
+legend right
+  The ports are the universal API. An adapter is chosen
+  at the composition root (main.cpp or the Arduino sketch);
+  the application is written once against the concepts and
+  never changes when the LED, board, or clock source changes.
+endlegend
+
+@enduml

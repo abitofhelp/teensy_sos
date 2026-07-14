@@ -1,0 +1,35 @@
+# Firmware build (PlatformIO)
+.pio/
+
+# Host test build
+.build-host/
+
+# Arduino CLI build output (compiled sketch/.hex/.elf; regenerable via `make arduino-build`)
+arduino/teensy_sos/build/
+
+# PlatformIO offline cache (large, host/arch-specific, regenerable via `make pio-prime`)
+vendor/platformio/
+teensy-pio-cache-*.tar.gz
+
+# Typst build output (PDFs are build artifacts; the .typ sources are tracked)
+docs/*/build/
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+
+# Review package
+teensy-sos-review.zip
+teensy-sos-review.zip.sha256
+SHA256SUMS.txt
+SOURCE_COMMIT.txt
+
+# Local-only working docs (review packages, handoffs) - never include in review/package artifacts
+exports/
+
+# Extracted review package (verification scratch)
+teensy-sos-review/
