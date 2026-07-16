@@ -4,15 +4,18 @@
 # The default build tool. Compiles the canonical library via platformio.ini, and
 # adds an offline package cache for air-gapped / restricted-network builds.
 #
-# The generic build/upload/monitor verbs bind here only when BUILDER=platformio;
-# the offline-cache targets (pio-prime/pio-bundle/build-offline/pio-clean-vendor)
-# and check-drive are always available while this fragment ships.
+# Naming: verb-first, builder-suffixed (build-platformio, upload-platformio, ...);
+# the root's generic build/upload/monitor alias to the -$(BUILDER) target. The
+# offline-cache trio (pio-prime/pio-bundle/pio-clean-vendor) is a self-contained
+# PlatformIO subsystem with no generic analog, so it keeps the pio- prefix.
+# HEX_platformio is this builder's flash image, picked up by the board's `flash`.
 # =============================================================================
 
 PIO_ENV  := teensy41
 PIO      := $(shell command -v pio 2>/dev/null || command -v platformio 2>/dev/null)
 PIO_NAME := PlatformIO
 PIO_HINT := pipx install platformio (or brew install platformio).
+HEX_platformio := .pio/build/$(PIO_ENV)/firmware.hex
 
 # Firmware cross-compile env hygiene. GCC-family compilers - including the Teensy
 # arm-none-eabi toolchain - honor CPATH/*_INCLUDE_PATH/LIBRARY_PATH. Some host
@@ -36,15 +39,10 @@ else
   PIO_CORE_ENV :=
 endif
 
-.PHONY: check-pio check-drive build-debug pio-prime pio-bundle build-offline pio-clean-vendor
-check-pio:
+.PHONY: check-platformio check-drive build-platformio build-debug upload-platformio \
+        monitor-platformio clean-platformio build-offline pio-prime pio-bundle pio-clean-vendor
+check-platformio:
 	$(call need,PIO)
-
-build-debug: check-pio check-drive ## Compile the firmware with debug symbols (env:teensy41_debug; live on-chip debug needs an SWD probe)
-	@printf "$(BLUE)Building DEBUG firmware (teensy41_debug: -Og -g3, symbols)...$(NC)\n"
-	@printf "$(YELLOW)Note: LOCAL debug build; release env:teensy41 is unchanged. Live on-chip debug needs an external SWD/J-Link probe - see DEBUGGING.md.$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)_debug
 
 # On Windows, PlatformIO unpacks packages via os.path.relpath, which raises
 # "Paths don't have the same drive" when the project-local core dir and Windows
@@ -64,7 +62,36 @@ ifeq ($(HOST_OS),Windows)
 	fi
 endif
 
-pio-prime: check-pio check-drive ## Populate vendor/platformio and prove it builds (run on a connected, same-OS/arch machine)
+build-platformio: check-platformio check-drive ## Compile the firmware for Teensy 4.1 (PlatformIO; uses vendor/platformio if present)
+	@printf "$(BLUE)Building firmware ($(PIO_ENV))...$(NC)\n"
+	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
+	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)
+
+build-debug: check-platformio check-drive ## Compile the firmware with debug symbols (env:teensy41_debug; live on-chip debug needs an SWD probe)
+	@printf "$(BLUE)Building DEBUG firmware (teensy41_debug: -Og -g3, symbols)...$(NC)\n"
+	@printf "$(YELLOW)Note: LOCAL debug build; release env:teensy41 is unchanged. Live on-chip debug needs an external SWD/J-Link probe - see DEBUGGING.md.$(NC)\n"
+	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
+	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)_debug
+
+upload-platformio: check-platformio check-drive ## Build and flash the firmware to a connected Teensy (PlatformIO)
+	@printf "$(BLUE)Uploading firmware to Teensy...$(NC)\n"
+	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
+	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t upload
+
+monitor-platformio: check-platformio ## Open the USB serial monitor (PlatformIO)
+	$(PIO_CORE_ENV) $(PIO) device monitor
+
+clean-platformio: ## Remove the PlatformIO build output (.pio)
+	-@[ -n "$(PIO)" ] && $(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t clean >/dev/null 2>&1 || true
+	rm -rf .pio
+
+build-offline: check-platformio check-drive ## Build firmware using ONLY vendor/platformio (cache-only; no install/update)
+	@[ -d "$(PIO_VENDOR)" ] || $(call die,No project-local core at $(PIO_VENDOR). Prime it ('make pio-prime') on a same-OS/arch machine or unpack a bundle into vendor/.)
+	@printf "$(BLUE)Cache-only build using $(PIO_VENDOR)...$(NC)\n"
+	@printf "$(YELLOW)Note: PlatformIO has no hard offline flag. This uses only the local core and does not intentionally install/update; verify true no-network on the restricted machine.$(NC)\n"
+	$(PIO_ENV_SANITIZE) PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) run -e $(PIO_ENV)
+
+pio-prime: check-platformio check-drive ## Populate vendor/platformio and prove it builds (run on a connected, same-OS/arch machine)
 	@printf "$(YELLOW)Priming $(PIO_VENDOR) - run on a machine WITH network and the SAME OS/arch as the offline target.$(NC)\n"
 	@mkdir -p $(PIO_VENDOR)
 	-@PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) settings set enable_telemetry No >/dev/null 2>&1 || true
@@ -80,41 +107,10 @@ pio-bundle: ## Pack vendor/platformio into a transferable OS/arch-named .tar.gz
 	tar -czf $(PIO_BUNDLE) -C $(dir $(PIO_VENDOR)) $(notdir $(PIO_VENDOR))
 	@printf "$(GREEN)Built %s$(NC) (%s)\n" "$(PIO_BUNDLE)" "$$(du -h $(PIO_BUNDLE) | cut -f1)"
 
-build-offline: check-pio check-drive ## Build firmware using ONLY vendor/platformio (cache-only; no install/update)
-	@[ -d "$(PIO_VENDOR)" ] || $(call die,No project-local core at $(PIO_VENDOR). Prime it ('make pio-prime') on a same-OS/arch machine or unpack a bundle into vendor/.)
-	@printf "$(BLUE)Cache-only build using $(PIO_VENDOR)...$(NC)\n"
-	@printf "$(YELLOW)Note: PlatformIO has no hard offline flag. This uses only the local core and does not intentionally install/update; verify true no-network on the restricted machine.$(NC)\n"
-	$(PIO_ENV_SANITIZE) PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) run -e $(PIO_ENV)
-
 pio-clean-vendor: ## Remove only vendor/platformio and generated cache archives
 	@printf "$(YELLOW)Removing $(PIO_VENDOR) and cache archives...$(NC)\n"
 	rm -rf $(PIO_VENDOR)
 	rm -f teensy-pio-cache-*.tar.gz
 
-# --- aggregate contributions (always, whether or not platformio is selected)
-clean::
-	-@[ -n "$(PIO)" ] && $(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t clean >/dev/null 2>&1 || true
-	rm -rf .pio
-
 check-tools::
 	$(call report,PIO)
-
-# --- generic verb bindings (only when this is the selected builder)
-ifeq ($(BUILDER),platformio)
-HEX ?= .pio/build/$(PIO_ENV)/firmware.hex
-.PHONY: build upload burn monitor
-build: check-pio check-drive
-	@printf "$(BLUE)Building firmware ($(PIO_ENV))...$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)
-
-upload: check-pio check-drive
-	@printf "$(BLUE)Uploading firmware to Teensy...$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t upload
-
-burn: upload
-
-monitor: check-pio
-	$(PIO_CORE_ENV) $(PIO) device monitor
-endif

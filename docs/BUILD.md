@@ -122,7 +122,7 @@ a separate, not-yet-validated slice** — the targets below use the **Arduino CL
 ### Prerequisites
 
 - **arduino-cli** (validated: 1.5.1) — `brew install arduino-cli`.
-- **Teensy core** (validated: `teensy:avr` 1.62.0). If `make arduino-check` reports
+- **Teensy core** (validated: `teensy:avr` 1.62.0). If `make check-arduino` reports
   it missing, add PJRC's package index and install the core:
   ```sh
   arduino-cli config add board_manager.additional_urls \
@@ -134,17 +134,17 @@ a separate, not-yet-validated slice** — the targets below use the **Arduino CL
 ### Build and upload
 
 ```sh
-make arduino-check   # verify arduino-cli, the Teensy core, and the teensy41 board
-make arduino-build   # compile with GNU C++20 against the canonical library
-make arduino-upload  # build + flash the connected Teensy (press Program if prompted)
-make build-all       # build BOTH frontends (PlatformIO + Arduino CLI)
+make check-arduino    # verify arduino-cli, the Teensy core, and the teensy41 board
+make build-arduino    # compile with GNU C++20 against the canonical library
+make upload-arduino   # build + flash the connected Teensy (press Program if prompted)
+make compare-builds   # build BOTH frontends (PlatformIO + Arduino CLI) and compare sizes
 ```
 
 ### Details that matter
 
 - **FQBN:** `teensy:avr:teensy41`.
 - **GNU C++20 is required.** Arduino/Teensyduino defaults to GNU C++17, so
-  `arduino-build` **replaces** the core's `build.flags.cpp` with the validated set:
+  `build-arduino` **replaces** the core's `build.flags.cpp` with the validated set:
   ```
   -std=gnu++20 -fno-exceptions -fpermissive -fno-rtti -fno-threadsafe-statics
   -felide-constructors -Wno-error=narrowing -Wno-psabi -Wno-maybe-uninitialized
@@ -156,7 +156,7 @@ make build-all       # build BOTH frontends (PlatformIO + Arduino CLI)
 - **Dynamic port detection.** The Makefile finds the Teensy port from
   `arduino-cli board list` (the row advertising `teensy:avr:teensy41`); it never
   hardcodes a port, because the HID address (e.g. `usb:100000`) is machine- and
-  moment-specific. Override it with `make arduino-upload ARDUINO_PORT=...`.
+  moment-specific. Override it with `make upload-arduino ARDUINO_PORT=...`.
 - **Program button.** As with any Teensy upload, press the on-board Program button
   if the loader asks for it.
 - **Repository-local library.** The build passes `--library lib/TeensySos`, so it

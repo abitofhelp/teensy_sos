@@ -25,6 +25,10 @@
 PROJECT_NAME := teensy_sos
 CANON_LIB    := lib/TeensySos/src
 
+# help is the default goal. The first target in the file is check-tools:: (defined
+# before the fragment includes), so set the default goal explicitly.
+.DEFAULT_GOAL := help
+
 # -----------------------------------------------------------------------------
 # Colors
 # -----------------------------------------------------------------------------
@@ -159,11 +163,22 @@ check-tools:: ## Report availability of the toolchain (each fragment adds its to
 	$(call report,EXIFTOOL)
 	$(call report,FFMPEG)
 
-# Include every present board + builder fragment. All contribute to clean:: and
-# check-tools::; only the fragment matching $(BUILDER) binds the generic
-# build/upload/monitor verbs (and its own HEX default).
+# Include every present board + builder fragment. All contribute to check-tools::;
+# each builder provides its own build-<builder>/upload-<builder>/monitor-<builder>/
+# clean-<builder> targets and a HEX_<builder> path. The generic verbs below alias
+# to the selected $(BUILDER).
 include $(wildcard mk/boards/*.mk)
 include $(wildcard mk/*.mk)
+
+# =============================================================================
+# Firmware verbs - resolve to the selected BUILDER (implemented in mk/<builder>.mk)
+# =============================================================================
+HEX ?= $(HEX_$(BUILDER))
+.PHONY: build upload burn monitor
+build:   build-$(BUILDER)   ## Build firmware with the selected build tool
+upload:  upload-$(BUILDER)  ## Build + flash with the selected build tool
+burn:    upload             ## Alias for upload (build + flash)
+monitor: monitor-$(BUILDER) ## Open the serial monitor with the selected build tool
 
 # =============================================================================
 # Default / help
@@ -177,7 +192,6 @@ help: ## Display this help message
 	@grep -hE '^[a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN{FS=":.*##"} {printf "  $(CYAN)%-16s$(NC) %s\n", $$1, $$2}'
 	@printf "\n$(BOLD)Build tool:$(NC) BUILDER=$(BUILDER)  (available: $(BUILDERS))\n"
-	@printf "  $(CYAN)%-16s$(NC) %s\n" "build/upload/burn/monitor" "resolve to the selected BUILDER"
 	@printf "$(BOLD)Variables:$(NC) CXX=%s   HEX=%s (for 'flash')\n" "$(CXX)" "$(HEX)"
 
 # =============================================================================
@@ -216,7 +230,7 @@ debug-host: | $(HOST_BUILD) ## Build a host suite with symbols and launch a debu
 # =============================================================================
 # Documentation (PlantUML diagrams + Typst formal docs)
 # =============================================================================
-.PHONY: docs diagrams diagrams-clean specs
+.PHONY: docs diagrams clean-diagrams specs
 docs: diagrams specs ## Build all documentation (diagrams + spec skeletons)
 	@printf "$(GREEN)All documentation built.$(NC)\n"
 
@@ -227,7 +241,7 @@ $(DIAGRAMS_DIR)/%.svg: $(DIAGRAMS_DIR)/%.puml
 	@printf "$(BLUE)plantuml$(NC) %s\n" "$<"
 	@$(PLANTUML) -tsvg -nometadata "$<"
 
-diagrams-clean: ## Remove generated diagram SVGs
+clean-diagrams: ## Remove generated diagram SVGs
 	rm -f $(DIAGRAMS_DIR)/*.svg
 
 specs: ## Compile the SRS/SDS/STG skeletons to docs/specs/build/*.pdf (needs Typst)
@@ -353,26 +367,25 @@ package: ## Build the review archive (tracked files + per-file SHA256SUMS.txt) a
 	fi
 
 # =============================================================================
-# Aggregate clean + rebuild. Board/builder fragments extend clean:: via `::`.
+# Aggregate clean + rebuild. Each builder fragment provides its own clean-<builder>.
 # =============================================================================
-.PHONY: clean rebuild
-clean:: ## Remove build artifacts (host tests; each fragment removes its own)
-	@printf "$(YELLOW)Cleaning build artifacts...$(NC)\n"
+.PHONY: clean clean-host rebuild
+clean: clean-host $(addprefix clean-,$(BUILDERS)) ## Remove all build artifacts (host + every shipped builder)
+
+clean-host: ## Remove host-test artifacts (.build-host)
+	@printf "$(YELLOW)Cleaning host-test artifacts...$(NC)\n"
 	rm -rf $(HOST_BUILD)
 
-rebuild: clean build ## Clean, then build the firmware with the selected builder
+rebuild: clean build ## Clean, then build with the selected builder
 
-# Reference/equivalence check: build with each shipped builder via recursive make
-# (each sub-make selects one builder, so the generic `build` never collides).
-# Only defined when 2+ builders ship. Size/image match is DIAGNOSTIC, not proof of
-# functional equivalence (that needs the on-hardware smoke test).
+# Reference/equivalence check: build with every shipped builder (they have distinct
+# build-<builder> targets, so no recursion or collision). Only defined when 2+
+# builders ship. Size/image match is DIAGNOSTIC, not proof of functional equivalence
+# (that needs the on-hardware smoke test).
 ifneq (,$(and $(filter platformio,$(BUILDERS)),$(filter arduino,$(BUILDERS))))
 .PHONY: compare-builds build-all
-compare-builds: ## Build with every shipped builder (diagnostic equivalence check)
-	@printf "$(BOLD)Comparing builds across builders: $(BUILDERS)$(NC)\n"
-	$(MAKE) --no-print-directory BUILDER=platformio build
-	$(MAKE) --no-print-directory BUILDER=arduino build
-	@printf "$(GREEN)Both builders built.$(NC) Size/image match is diagnostic, not proof of functional equivalence.\n"
+compare-builds: $(addprefix build-,$(BUILDERS)) ## Build with every shipped builder (diagnostic equivalence check)
+	@printf "$(GREEN)Built with: $(BUILDERS).$(NC) Size/image match is diagnostic, not proof of functional equivalence.\n"
 
 build-all: compare-builds ## Alias for compare-builds (back-compat)
 endif

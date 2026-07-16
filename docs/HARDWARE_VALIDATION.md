@@ -75,7 +75,7 @@ S(red dots) · O(green dashes) · S(blue dots)
 - ✅ Color mapping correct (R→18, G→14, B→15).
 - ✅ Gaps fully dark (confirms common-cathode polarity, `kCommonAnode = false`).
 
-## Arduino CLI frontend (`make arduino-build` / `make arduino-upload`)
+## Arduino CLI frontend (`make build-arduino` / `make upload-arduino`)
 
 The **same canonical library** was compiled and flashed through the Arduino CLI
 (`arduino-cli` 1.5.1, `teensy:avr` 1.62.0), confirming a second command-line
