@@ -1,33 +1,33 @@
 # =============================================================================
-# Project Makefile
+# Project Makefile (modular, multi-builder)
 # =============================================================================
 # Project: teensy_sos (SOS Morse blinker on an RGB LED)
-# Purpose: Clean-room Teensy 4.1 starter/reference project with a hexagonal,
-#          port/adapter architecture and a cross-platform, offline-capable build.
 #
-# This Makefile provides:
-#   - Firmware targets   (build, upload/burn, monitor, clean, rebuild) via PlatformIO
-#   - Offline cache      (pio-prime, pio-bundle, build-offline) for air-gapped builds
-#   - Air-gap flashing   (flash HEX=...) via teensy_loader_cli, no PlatformIO needed
-#   - Host test targets  (test, test-core, test-morse, test-sos) via the C++ compiler
-#   - Tooling            (check-tools) and packaging (package)
+# Layout:
+#   Makefile              this file - board/tool-agnostic common targets
+#                         (help, host tests, docs, media, package, check-tools)
+#                         plus build-tool selection.
+#   mk/boards/<board>.mk  board-specific: air-gap flashing (teensy_loader_cli).
+#   mk/<builder>.mk       one build tool each: build/upload/monitor + extras.
+#                         Present today: platformio, arduino.
 #
-# Firmware needs PlatformIO (`pipx install platformio` or `brew install platformio`).
-# Host tests need only a C++20 compiler - no Teensy toolchain.
+# Pick the build tool with BUILDER=<name> (default: platformio when present,
+# else the first available). A real project usually ships ONE builder; this
+# starter ships both to demonstrate frontend equivalence. Adding a build tool
+# is a drop-in: a new mk/<builder>.mk implementing build/upload - no edits here.
+#
+# Every present fragment self-registers with the aggregate targets (clean::,
+# check-tools::), so those cover exactly what the tree ships.
+#
+# Host tests need only a C++20 compiler - no Teensy toolchain, no build tool.
 # =============================================================================
 
 PROJECT_NAME := teensy_sos
+CANON_LIB    := lib/TeensySos/src
 
-.PHONY: all help build build-debug build-offline upload burn monitor clean rebuild flash \
-        arduino-check arduino-build arduino-upload arduino-clean build-all \
-        pio-prime pio-bundle pio-clean-vendor \
-        test test-core test-morse test-sos debug-host \
-        diagrams diagrams-clean specs docs sanitize-media verify-media \
-        check-tools package check-pio check-drive
-
-# =============================================================================
+# -----------------------------------------------------------------------------
 # Colors
-# =============================================================================
+# -----------------------------------------------------------------------------
 GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 RED    := \033[0;31m
@@ -36,15 +36,11 @@ CYAN   := \033[0;36m
 BOLD   := \033[1m
 NC     := \033[0m
 
-# =============================================================================
-# Tools & configuration
-# =============================================================================
-PIO_ENV  := teensy41
-PIO      := $(shell command -v pio 2>/dev/null || command -v platformio 2>/dev/null)
-
+# -----------------------------------------------------------------------------
 # Host platform detection. On Windows - including MSYS2/mingw64 shells - the OS
-# environment variable is Windows_NT; elsewhere we fall back to uname. This drives
-# the host-test executable suffix and the default host compiler.
+# environment variable is Windows_NT; elsewhere we fall back to uname. This
+# drives the host-test executable suffix and the default host compiler.
+# -----------------------------------------------------------------------------
 ifeq ($(OS),Windows_NT)
   HOST_OS := Windows
   EXE     := .exe
@@ -52,6 +48,7 @@ else
   HOST_OS := $(shell uname -s)
   EXE     :=
 endif
+ARCH := $(shell uname -m 2>/dev/null || echo unknown)
 
 # Host compiler. Honor an explicit CXX from the environment or command line; only
 # when CXX is still Make's built-in default do we pick the project standard (GNU
@@ -64,19 +61,15 @@ ifeq ($(origin CXX),default)
   endif
 endif
 
-# The canonical headers live in the TeensySos library (lib/TeensySos/src), shared
-# by both the PlatformIO and Arduino composition roots; host tests include them
-# straight from there - no Teensy toolchain, no duplication.
-HOST_CXXFLAGS := -std=c++20 -Wall -Wextra -Ilib/TeensySos/src
+# The canonical headers live in $(CANON_LIB), shared by every builder and by the
+# host tests, which include them straight from there - no Teensy toolchain.
+HOST_CXXFLAGS := -std=c++20 -Wall -Wextra -I$(CANON_LIB)
 HOST_BUILD    := .build-host
 
 # Host debugging (LOCAL development only). `make debug-host` builds one host suite
-# with debugger-friendly flags and drops into the platform debugger. -Og keeps the
-# code optimized-but-debuggable, -g3 includes macro info, -fno-omit-frame-pointer
-# keeps backtraces reliable. This debugs the DOMAIN/APPLICATION logic on the host -
-# it is NOT firmware-on-the-chip debugging (the Teensy 4.1 has no on-board probe;
-# see DEBUGGING.md). Pick the suite with SUITE=core|morse|sos (default sos) and
-# override the debugger with DEBUGGER=... if needed.
+# with debugger-friendly flags and drops into the platform debugger. This debugs
+# the DOMAIN/APPLICATION logic on the host - NOT firmware-on-the-chip (the Teensy
+# 4.1 has no on-board probe; see DEBUGGING.md). SUITE=core|morse|sos (default sos).
 HOST_DBGFLAGS := -Og -g3 -fno-omit-frame-pointer
 SUITE         ?= sos
 ifeq ($(SUITE),core)
@@ -95,77 +88,19 @@ ifeq ($(HOST_OS),Darwin)
 else
   DEBUGGER ?= gdb
 endif
+DEBUGGER_NAME := $(DEBUGGER)
+DEBUGGER_HINT := see DEBUGGING.md (macOS: xcode-select --install; Linux: install gdb; MSYS2: pacman -S mingw-w64-ucrt-x86_64-gdb); only for 'make debug-host'.
 
-# Firmware cross-compile env hygiene. GCC-family compilers - including the Teensy
-# arm-none-eabi toolchain - honor CPATH/*_INCLUDE_PATH/LIBRARY_PATH. Some host
-# toolchain setups (e.g. Alire's Ada toolchain) export CPATH=$SDKROOT/usr/include,
-# which leaks host SDK headers into the ARM/newlib firmware build and fails the
-# compile (__sbuf/__sFILE redefined). We strip exactly those include/library-path
-# vars for PlatformIO firmware invocations with a TARGETED `env -u` (never `env -i`,
-# which would also drop PATH/proxy/CA/PLATFORMIO_CORE_DIR that offline & corporate
-# builds depend on). Host tests (`make test`) are NOT sanitized: a host SDK on
-# CPATH is harmless - and even wanted - for a native compile.
-PIO_ENV_SANITIZE := env -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
-                        -u OBJC_INCLUDE_PATH -u LIBRARY_PATH
-
-# PlatformIO offline cache (air-gapped / restricted-network builds). A project-local
-# core dir holds the platform, toolchain, framework, and tools so firmware can build
-# without fetching from the registry. Prime it on a connected machine of the SAME
-# OS/arch as the offline target; bundles are OS/arch-specific. See docs/BUILD.md.
-PIO_VENDOR := vendor/platformio
-ARCH       := $(shell uname -m 2>/dev/null || echo unknown)
-PIO_BUNDLE := teensy-pio-cache-$(HOST_OS)-$(ARCH).tar.gz
-# If a project-local core exists, route firmware pio invocations through it.
-ifneq ($(wildcard $(PIO_VENDOR)),)
-  PIO_CORE_ENV := PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR))
-else
-  PIO_CORE_ENV :=
-endif
-
-# Air-gap flashing: burn a prebuilt .hex with the standalone Teensy loader, with
-# NO PlatformIO and NO network. This is the cross-domain path - build the .hex on
-# a connected machine, transfer only the small ASCII .hex across the software
-# bridge, and flash it inside the enclave. Override the source with HEX=/path.
-TEENSY_LOADER := $(shell command -v teensy_loader_cli 2>/dev/null)
-HEX           ?= .pio/build/$(PIO_ENV)/firmware.hex
-
-# Arduino CLI (a second, co-equal command-line frontend to PlatformIO). Both
-# frontends compile the SAME canonical library (lib/TeensySos); the sketch
-# arduino/teensy_sos/teensy_sos.ino is only a thin composition root.
-#
-# Teensy/Teensyduino defaults to GNU C++17, but this project requires GNU C++20,
-# so arduino-build REPLACES build.flags.cpp with the validated C++20 flag set.
-# Output/input dirs are ABSOLUTE on purpose: a relative input dir makes the Teensy
-# loader fail to read the compiled sketch on upload.
-#
-# Arduino IDE support is a SEPARATE, not-yet-validated slice - it is NOT provided
-# by these targets (Arduino CLI only). See docs/BUILD.md.
-ARDUINO_CLI    := $(shell command -v arduino-cli 2>/dev/null)
-ARDUINO_FQBN   := teensy:avr:teensy41
-# Reviewed & hardware-validated Teensy core version. Override deliberately to
-# qualify a newer one: make ARDUINO_CORE_VERSION=<ver> arduino-build
-ARDUINO_CORE_VERSION := 1.62.0
-ARDUINO_SKETCH := arduino/teensy_sos
-ARDUINO_BUILD  := $(abspath arduino/teensy_sos/build)
-ARDUINO_LIB    := $(abspath lib/TeensySos)
-# GNU C++20 flags for the Teensy core, validated on hardware. This REPLACES the
-# core's default build.flags.cpp (which selects gnu++17).
-ARDUINO_CPP_FLAGS := -std=gnu++20 -fno-exceptions -fpermissive -fno-rtti \
-                     -fno-threadsafe-statics -felide-constructors \
-                     -Wno-error=narrowing -Wno-psabi -Wno-maybe-uninitialized
-# Dynamic Teensy port detection - never hardcode usb:100000 (it is machine- and
-# moment-specific). Pick the port whose row advertises the teensy41 FQBN; override
-# with ARDUINO_PORT=... on the command line. Evaluated lazily (only 'arduino-upload'
-# needs it), so unrelated targets never query the USB bus.
-ARDUINO_PORT   ?= $(shell $(ARDUINO_CLI) board list 2>/dev/null | awk 'tolower($$0) ~ /teensy:avr:teensy41/ {print $$1; exit}')
-
-# Documentation tooling. Diagrams: PlantUML (.puml -> .svg, SVGs are checked in as
-# reviewed artifacts). Formal docs: Typst (.typ -> PDF, PDFs are build artifacts).
+# -----------------------------------------------------------------------------
+# Documentation + media tools (used by common targets and reported by check-tools)
+# -----------------------------------------------------------------------------
 DIAGRAMS_DIR := docs/diagrams
 PUML         := $(wildcard $(DIAGRAMS_DIR)/*.puml)
 SVG          := $(PUML:.puml=.svg)
-TYPST        := $(shell command -v typst 2>/dev/null)
 SPECS_SRC    := $(wildcard docs/specs/*.typ)
+ASSET_IMAGES := $(wildcard docs/assets/images/*.jpeg docs/assets/images/*.jpg docs/assets/images/*.png)
+ASSET_VIDEOS := $(wildcard docs/assets/videos/*.mov docs/assets/videos/*.mp4)
+
 PLANTUML_JAR ?=
 ifneq ($(shell command -v plantuml 2>/dev/null),)
   PLANTUML := plantuml
@@ -174,185 +109,81 @@ else ifneq ($(PLANTUML_JAR),)
 else
   PLANTUML :=
 endif
+PLANTUML_NAME := PlantUML
+PLANTUML_HINT := brew install plantuml or set PLANTUML_JAR=<path>; only for 'make diagrams'.
+TYPST         := $(shell command -v typst 2>/dev/null)
+TYPST_NAME    := Typst
+TYPST_HINT    := brew install typst (or see https://typst.app); only for 'make specs'.
+EXIFTOOL      := $(shell command -v exiftool 2>/dev/null)
+EXIFTOOL_NAME := exiftool
+EXIFTOOL_HINT := brew install exiftool; only for 'make sanitize-media'.
+FFMPEG        := $(shell command -v ffmpeg 2>/dev/null)
+FFMPEG_NAME   := ffmpeg
+FFMPEG_HINT   := brew install ffmpeg; only for 'make sanitize-media' video.
 
-# Media hygiene. Personal photos/videos carry GPS + device metadata (and iPhone
-# videos carry audio + timed-metadata data tracks). `make sanitize-media` strips
-# all of it in place so the media in docs/assets/ is safe to commit. Needs exiftool
-# for images; exiftool + ffmpeg for video. These are maintenance-only tools - not
-# required to build, test, or document the project.
-EXIFTOOL     := $(shell command -v exiftool 2>/dev/null)
-FFMPEG       := $(shell command -v ffmpeg 2>/dev/null)
-ASSET_IMAGES := $(wildcard docs/assets/images/*.jpeg docs/assets/images/*.jpg docs/assets/images/*.png)
-ASSET_VIDEOS := $(wildcard docs/assets/videos/*.mov docs/assets/videos/*.mp4)
+# -----------------------------------------------------------------------------
+# Helpers (DRY the repeated tool guards and error exits)
+#   $(call need,VAR)   fail a recipe if $(VAR) is empty, printing "<NAME> not
+#                      found. <HINT>". Each guarded tool defines VAR_NAME/VAR_HINT.
+#   $(call die,text)   print a red error and fail (text must not contain commas).
+#   $(call report,VAR) one check-tools line: the path, or red "not found - HINT".
+# -----------------------------------------------------------------------------
+need   = @[ -n "$($(1))" ] || { printf "$(RED)%s not found.$(NC) %b\n" "$($(1)_NAME)" "$($(1)_HINT)" >&2; exit 1; }
+die    = { printf "$(RED)%b$(NC)\n" "$(1)" >&2; exit 1; }
+report = @printf "%-13s : %b\n" "$($(1)_NAME)" "$(if $($(1)),$($(1)),$(RED)not found$(NC) - $($(1)_HINT))"
+
+# -----------------------------------------------------------------------------
+# Build-tool selection. Builders are the mk/*.mk fragments present in the tree.
+# Default to platformio when it ships, else the first available builder - so the
+# SAME root Makefile works on a full tree and on an arduino-only delivery subset
+# with no edits. An explicit but unavailable BUILDER fails loudly.
+# -----------------------------------------------------------------------------
+BUILDERS := $(sort $(patsubst mk/%.mk,%,$(wildcard mk/*.mk)))
+ifeq ($(BUILDERS),)
+  $(error No build-tool fragments found in mk/. Add mk/<builder>.mk)
+endif
+BUILDER ?= $(if $(filter platformio,$(BUILDERS)),platformio,$(firstword $(BUILDERS)))
+ifeq ($(filter $(BUILDER),$(BUILDERS)),)
+  $(error BUILDER='$(BUILDER)' is not available. Present builders: $(BUILDERS). Use BUILDER=<one of them>)
+endif
+
+# Common check-tools lines are defined here (before the includes) so they print
+# first; each board/builder fragment appends its own tool line via `check-tools::`.
+.PHONY: check-tools
+check-tools:: ## Report availability of the toolchain (each fragment adds its tools)
+	@printf "%-13s : %b (host-test exe suffix '%s')\n" "Platform" "$(HOST_OS)/$(ARCH)" "$(EXE)"
+	@printf "%-13s : %b (%s)\n" "C++ (host)" "$(shell command -v $(CXX) 2>/dev/null || printf '$(RED)not found$(NC)')" "$(CXX)"
+	@printf "%-13s : %b\n" "$(DEBUGGER_NAME)" "$(shell command -v $(DEBUGGER) 2>/dev/null || printf '$(RED)not found$(NC)') - only for 'make debug-host'"
+	$(call report,PLANTUML)
+	$(call report,TYPST)
+	$(call report,EXIFTOOL)
+	$(call report,FFMPEG)
+
+# Include every present board + builder fragment. All contribute to clean:: and
+# check-tools::; only the fragment matching $(BUILDER) binds the generic
+# build/upload/monitor verbs (and its own HEX default).
+include $(wildcard mk/boards/*.mk)
+include $(wildcard mk/*.mk)
 
 # =============================================================================
-# Default
+# Default / help
 # =============================================================================
+.PHONY: all help
 all: help
 
 help: ## Display this help message
 	@printf "$(BOLD)$(PROJECT_NAME) - SOS Morse blinker on an RGB LED$(NC)\n\n"
 	@printf "$(BOLD)Targets:$(NC)\n"
-	@grep -E '^[a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN{FS=":.*##"} {printf "  $(CYAN)%-16s$(NC) %s\n", $$1, $$2}'
-	@printf "\n$(BOLD)Variables:$(NC)\n"
-	@printf "  CXX=%s (host tests)   PIO_ENV=%s   HEX=%s (for 'flash')\n" "$(CXX)" "$(PIO_ENV)" "$(HEX)"
-
-# =============================================================================
-# Firmware (PlatformIO)
-# =============================================================================
-build: check-pio check-drive ## Compile the firmware for Teensy 4.1 (uses vendor/platformio if present)
-	@printf "$(BLUE)Building firmware ($(PIO_ENV))...$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)
-
-build-debug: check-pio check-drive ## Compile the firmware with debug symbols (env:teensy41_debug; live on-chip debug needs an SWD probe)
-	@printf "$(BLUE)Building DEBUG firmware (teensy41_debug: -Og -g3 -fno-omit-frame-pointer, symbols)...$(NC)\n"
-	@printf "$(YELLOW)Note: this is a LOCAL debug build; the release env:teensy41 is unchanged. Live on-chip$(NC)\n"
-	@printf "$(YELLOW)      debugging needs an external SWD/J-Link probe wired to the Teensy - see DEBUGGING.md.$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV)_debug
-
-upload: check-pio check-drive ## Build and flash the firmware to a connected Teensy (via PlatformIO)
-	@printf "$(BLUE)Uploading firmware to Teensy...$(NC)\n"
-	@if [ -n "$(PIO_CORE_ENV)" ]; then printf "$(CYAN)Using project-local PlatformIO core: $(PIO_VENDOR)$(NC)\n"; fi
-	$(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t upload
-
-burn: upload ## Alias for 'upload' (build + flash)
-
-monitor: check-pio ## Open the USB serial monitor
-	$(PIO_CORE_ENV) $(PIO) device monitor
-
-clean: ## Remove firmware, host-test, and Arduino CLI build artifacts
-	@printf "$(YELLOW)Cleaning build artifacts...$(NC)\n"
-	-@[ -n "$(PIO)" ] && $(PIO_ENV_SANITIZE) $(PIO_CORE_ENV) $(PIO) run -e $(PIO_ENV) -t clean >/dev/null 2>&1 || true
-	rm -rf .pio $(HOST_BUILD) "$(ARDUINO_BUILD)"
-
-rebuild: clean build ## Clean, then build the firmware
-
-# =============================================================================
-# Arduino CLI (second command-line frontend; compiles the SAME canonical library)
-# =============================================================================
-arduino-check: ## Verify arduino-cli, the Teensy core, and the teensy41 board are available
-	@if [ -z "$(ARDUINO_CLI)" ]; then \
-		printf "$(RED)arduino-cli not found.$(NC) Install it, then re-run (see docs/BUILD.md):\n"; \
-		printf "  macOS: brew install arduino-cli   Linux/Windows: https://arduino.github.io/arduino-cli/\n"; \
-		exit 1; \
-	fi
-	@printf "$(BLUE)%s$(NC)\n" "$$($(ARDUINO_CLI) version)"
-	@if ! $(ARDUINO_CLI) core list 2>/dev/null | grep -q '^teensy:avr'; then \
-		printf "$(RED)Teensy core (teensy:avr) is not installed.$(NC) Install it (see docs/BUILD.md):\n"; \
-		printf "  arduino-cli config add board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json\n"; \
-		printf "  arduino-cli core update-index && arduino-cli core install teensy:avr@$(ARDUINO_CORE_VERSION)\n"; \
-		exit 1; \
-	fi
-	@installed="$$($(ARDUINO_CLI) core list 2>/dev/null | awk '/^teensy:avr/{print $$2; exit}')"; \
-	if [ "$$installed" != "$(ARDUINO_CORE_VERSION)" ]; then \
-		printf "$(RED)Teensy core is %s, but the reviewed/validated version is $(ARDUINO_CORE_VERSION).$(NC)\n" "$$installed"; \
-		printf "  Install it:  arduino-cli core install teensy:avr@$(ARDUINO_CORE_VERSION)\n"; \
-		printf "  Or qualify the installed one:  make ARDUINO_CORE_VERSION=%s arduino-build\n" "$$installed"; \
-		exit 1; \
-	fi; \
-	printf "$(GREEN)Teensy core:$(NC) %s (validated)\n" "$$installed"
-	@if ! $(ARDUINO_CLI) board details --fqbn $(ARDUINO_FQBN) >/dev/null 2>&1; then \
-		printf "$(RED)Board $(ARDUINO_FQBN) is not known to arduino-cli.$(NC) Is the Teensy core installed correctly?\n"; \
-		exit 1; \
-	fi
-	@printf "$(GREEN)Board OK:$(NC) $(ARDUINO_FQBN)\n"
-
-arduino-build: arduino-check ## Compile the Arduino sketch with GNU C++20 against the canonical library (absolute output dir)
-	@printf "$(BLUE)Arduino CLI build ($(ARDUINO_FQBN), GNU C++20)...$(NC)\n"
-	@rm -rf "$(ARDUINO_BUILD)"
-	@mkdir -p "$(ARDUINO_BUILD)"
-	$(ARDUINO_CLI) compile \
-		--clean \
-		--fqbn $(ARDUINO_FQBN) \
-		--library "$(ARDUINO_LIB)" \
-		--build-property "build.flags.cpp=$(ARDUINO_CPP_FLAGS)" \
-		--output-dir "$(ARDUINO_BUILD)" \
-		"$(ARDUINO_SKETCH)"
-	@printf "$(GREEN)Arduino build OK$(NC) -> $(ARDUINO_BUILD)\n"
-
-arduino-upload: arduino-build ## Build, then flash the connected Teensy via Arduino CLI (dynamic port; override ARDUINO_PORT=...)
-	@port="$(ARDUINO_PORT)"; \
-	if [ -z "$$port" ]; then \
-		printf "$(RED)No Teensy port detected.$(NC) Connect the board, or pass ARDUINO_PORT=... (see 'arduino-cli board list').\n"; \
-		exit 1; \
-	fi; \
-	printf "$(BLUE)Arduino CLI upload to %s (press the Teensy Program button if prompted)...$(NC)\n" "$$port"; \
-	$(ARDUINO_CLI) upload \
-		-p "$$port" \
-		--fqbn $(ARDUINO_FQBN) \
-		--input-dir "$(ARDUINO_BUILD)" \
-		"$(ARDUINO_SKETCH)"
-
-arduino-clean: ## Remove the Arduino CLI build output
-	@printf "$(YELLOW)Cleaning Arduino build artifacts...$(NC)\n"
-	rm -rf "$(ARDUINO_BUILD)"
-
-build-all: build arduino-build ## Build the firmware with BOTH CLI frontends (PlatformIO + Arduino)
-	@printf "$(GREEN)Both frontends built:$(NC) PlatformIO (.pio) and Arduino CLI ($(ARDUINO_BUILD)).\n"
-
-# =============================================================================
-# Air-gap flashing (no PlatformIO, no network)
-# =============================================================================
-flash: ## Flash a prebuilt .hex with teensy_loader_cli (air-gap path). Override HEX=/path.
-	@if [ -z "$(TEENSY_LOADER)" ]; then \
-		printf "$(RED)teensy_loader_cli not found.$(NC) Install it (brew install teensy_loader_cli,\n"; \
-		printf "or build from https://github.com/PaulStoffregen/teensy_loader_cli) to flash without PlatformIO.\n"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(HEX)" ]; then \
-		printf "$(RED)No .hex at $(HEX).$(NC) Build it ('make build') or pass HEX=/path/to/firmware.hex.\n"; \
-		exit 1; \
-	fi
-	@printf "$(BLUE)Flashing %s to Teensy 4.1 (press the on-board button if prompted)...$(NC)\n" "$(HEX)"
-	$(TEENSY_LOADER) --mcu=TEENSY41 -w -v "$(HEX)"
-
-# =============================================================================
-# PlatformIO offline cache (air-gapped / restricted-network builds)
-# =============================================================================
-# The bundle supplies PlatformIO's platform/toolchain/framework PACKAGES, not the
-# `pio` executable itself - the target machine still needs PlatformIO Core / `pio`
-# installed by an approved method. Cache bundles are OS/arch-specific: prime on the
-# same platform family as the offline target.
-
-pio-prime: check-pio check-drive ## Populate vendor/platformio and prove it builds (run on a connected, same-OS/arch machine)
-	@printf "$(YELLOW)Priming $(PIO_VENDOR) - run on a machine WITH network and the SAME OS/arch as the offline target.$(NC)\n"
-	@mkdir -p $(PIO_VENDOR)
-	-@PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) settings set enable_telemetry No >/dev/null 2>&1 || true
-	@printf "$(BLUE)Installing packages for $(PIO_ENV)...$(NC)\n"
-	PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) pkg install -e $(PIO_ENV)
-	@printf "$(BLUE)Verification build against the local core...$(NC)\n"
-	$(PIO_ENV_SANITIZE) PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) run -e $(PIO_ENV)
-	@printf "$(GREEN)Primed and verified.$(NC) Bundle it with 'make pio-bundle'.\n"
-
-pio-bundle: ## Pack vendor/platformio into a transferable OS/arch-named .tar.gz
-	@if [ ! -d "$(PIO_VENDOR)" ]; then \
-		printf "$(RED)Nothing to bundle: $(PIO_VENDOR) is missing.$(NC) Run 'make pio-prime' first.\n"; \
-		exit 1; \
-	fi
-	@printf "$(BLUE)Bundling $(PIO_VENDOR) -> $(PIO_BUNDLE)$(NC)\n"
-	tar -czf $(PIO_BUNDLE) -C $(dir $(PIO_VENDOR)) $(notdir $(PIO_VENDOR))
-	@printf "$(GREEN)Built %s$(NC) (%s)\n" "$(PIO_BUNDLE)" "$$(du -h $(PIO_BUNDLE) | cut -f1)"
-
-build-offline: check-pio check-drive ## Build firmware using ONLY vendor/platformio (cache-only; no install/update)
-	@if [ ! -d "$(PIO_VENDOR)" ]; then \
-		printf "$(RED)No project-local core at $(PIO_VENDOR).$(NC) Prime it ('make pio-prime') on a same-OS/arch machine, or unpack a bundle into vendor/.\n"; \
-		exit 1; \
-	fi
-	@printf "$(BLUE)Cache-only build using $(PIO_VENDOR)...$(NC)\n"
-	@printf "$(YELLOW)Note: PlatformIO has no hard offline flag. This uses only the local core and does not intentionally install/update; verify true no-network on the restricted machine.$(NC)\n"
-	$(PIO_ENV_SANITIZE) PLATFORMIO_CORE_DIR=$(abspath $(PIO_VENDOR)) $(PIO) run -e $(PIO_ENV)
-
-pio-clean-vendor: ## Remove only vendor/platformio and generated cache archives
-	@printf "$(YELLOW)Removing $(PIO_VENDOR) and cache archives...$(NC)\n"
-	rm -rf $(PIO_VENDOR)
-	rm -f teensy-pio-cache-*.tar.gz
+	@printf "\n$(BOLD)Build tool:$(NC) BUILDER=$(BUILDER)  (available: $(BUILDERS))\n"
+	@printf "  $(CYAN)%-16s$(NC) %s\n" "build/upload/burn/monitor" "resolve to the selected BUILDER"
+	@printf "$(BOLD)Variables:$(NC) CXX=%s   HEX=%s (for 'flash')\n" "$(CXX)" "$(HEX)"
 
 # =============================================================================
 # Host tests (no Teensy toolchain required)
 # =============================================================================
+.PHONY: test test-core test-morse test-sos debug-host
 test: test-core test-morse test-sos ## Build & run all host unit tests
 	@printf "$(GREEN)All host test suites passed.$(NC)\n"
 
@@ -375,32 +206,24 @@ test-sos: | $(HOST_BUILD) ## SosController state-machine tests (fake LED + fake 
 	@$(HOST_BUILD)/test_sos$(EXE)
 
 debug-host: | $(HOST_BUILD) ## Build a host suite with symbols and launch a debugger (SUITE=core|morse|sos, DEBUGGER=lldb|gdb)
-	@if [ -z "$(DBG_SRC)" ]; then \
-		printf "$(RED)Unknown SUITE='$(SUITE)'.$(NC) Use SUITE=core, SUITE=morse, or SUITE=sos.\n"; exit 1; \
-	fi
-	@if ! command -v $(DEBUGGER) >/dev/null 2>&1; then \
-		printf "$(RED)Debugger '$(DEBUGGER)' not found.$(NC) See DEBUGGING.md for per-OS install steps\n"; \
-		printf "  (macOS: lldb via 'xcode-select --install'; Linux: install gdb; MSYS2: pacman -S mingw-w64-ucrt-x86_64-gdb).\n"; \
-		exit 1; \
-	fi
+	@[ -n "$(DBG_SRC)" ] || $(call die,Unknown SUITE='$(SUITE)'. Use SUITE=core|morse|sos.)
+	$(call need,DEBUGGER)
 	@printf "$(BLUE)Building %s with debug symbols ($(HOST_DBGFLAGS))...$(NC)\n" "$(DBG_SRC)"
 	$(CXX) $(HOST_CXXFLAGS) $(HOST_DBGFLAGS) $(DBG_SRC) -o $(HOST_BUILD)/debug_$(SUITE)$(EXE)
-	@printf "$(BLUE)Launching $(DEBUGGER) on $(HOST_BUILD)/debug_$(SUITE)$(EXE)$(NC) (run the program with 'run'; quit with 'quit').\n"
+	@printf "$(BLUE)Launching $(DEBUGGER) on $(HOST_BUILD)/debug_$(SUITE)$(EXE)$(NC) (run with 'run'; quit with 'quit').\n"
 	@$(DEBUGGER) $(HOST_BUILD)/debug_$(SUITE)$(EXE)
 
 # =============================================================================
 # Documentation (PlantUML diagrams + Typst formal docs)
 # =============================================================================
+.PHONY: docs diagrams diagrams-clean specs
 docs: diagrams specs ## Build all documentation (diagrams + spec skeletons)
 	@printf "$(GREEN)All documentation built.$(NC)\n"
 
 diagrams: $(SVG) ## Generate SVGs from all docs/diagrams/*.puml
 
 $(DIAGRAMS_DIR)/%.svg: $(DIAGRAMS_DIR)/%.puml
-	@if [ -z "$(PLANTUML)" ]; then \
-		printf "$(RED)PlantUML not found.$(NC) Install it (brew install plantuml) or set PLANTUML_JAR=<path>.\n"; \
-		exit 1; \
-	fi
+	$(call need,PLANTUML)
 	@printf "$(BLUE)plantuml$(NC) %s\n" "$<"
 	@$(PLANTUML) -tsvg -nometadata "$<"
 
@@ -408,10 +231,7 @@ diagrams-clean: ## Remove generated diagram SVGs
 	rm -f $(DIAGRAMS_DIR)/*.svg
 
 specs: ## Compile the SRS/SDS/STG skeletons to docs/specs/build/*.pdf (needs Typst)
-	@if [ -z "$(TYPST)" ]; then \
-		printf "$(RED)Typst not found.$(NC) Install it: brew install typst (or see https://typst.app).\n"; \
-		exit 1; \
-	fi
+	$(call need,TYPST)
 	@mkdir -p docs/specs/build
 	@for src in $(SPECS_SRC); do \
 		out="docs/specs/build/$$(basename "$${src%.typ}").pdf"; \
@@ -423,17 +243,16 @@ specs: ## Compile the SRS/SDS/STG skeletons to docs/specs/build/*.pdf (needs Typ
 # =============================================================================
 # Media hygiene (strip GPS/device metadata before committing photos/video)
 # =============================================================================
+.PHONY: sanitize-media verify-media
 sanitize-media: ## Strip GPS/device/metadata (and video audio/data tracks) from docs/assets media
-	@if [ -z "$(EXIFTOOL)" ]; then \
-		printf "$(RED)exiftool not found.$(NC) Install it: brew install exiftool.\n"; exit 1; \
-	fi
+	$(call need,EXIFTOOL)
 	@if [ -n "$(strip $(ASSET_IMAGES))" ]; then \
 		printf "$(BLUE)Stripping image metadata (keeping Orientation)...$(NC)\n"; \
 		$(EXIFTOOL) -all= -tagsFromFile @ -Orientation -overwrite_original $(ASSET_IMAGES) >/dev/null; \
 		printf "  images: %s\n" "$(words $(ASSET_IMAGES))"; \
 	fi
 	@if [ -n "$(strip $(ASSET_VIDEOS))" ]; then \
-		if [ -z "$(FFMPEG)" ]; then printf "$(RED)ffmpeg not found (needed for video).$(NC) brew install ffmpeg.\n"; exit 1; fi; \
+		if [ -z "$(FFMPEG)" ]; then $(call die,ffmpeg not found (needed for video). brew install ffmpeg.); fi; \
 		for v in $(ASSET_VIDEOS); do \
 			printf "$(BLUE)Stripping video metadata/audio/data tracks: %s$(NC)\n" "$$v"; \
 			tmp="$${v%.*}.__sanitizing__.$${v##*.}"; \
@@ -446,9 +265,7 @@ sanitize-media: ## Strip GPS/device/metadata (and video audio/data tracks) from 
 	@printf "$(GREEN)Media sanitized.$(NC) Verify with 'make verify-media'.\n"
 
 verify-media: ## Read-only release gate: FAIL if committed media still carries GPS/location/owner/serial metadata (or video audio)
-	@if [ -z "$(EXIFTOOL)" ]; then \
-		printf "$(RED)exiftool not found.$(NC) Install it: brew install exiftool.\n"; exit 1; \
-	fi
+	$(call need,EXIFTOOL)
 	@fail=0; \
 	pat='GPS|Location|Serial|Owner'; \
 	for f in $(ASSET_IMAGES) $(ASSET_VIDEOS); do \
@@ -461,8 +278,7 @@ verify-media: ## Read-only release gate: FAIL if committed media still carries G
 	done; \
 	ffprobe=$$(command -v ffprobe 2>/dev/null); \
 	if [ -n "$(strip $(ASSET_VIDEOS))" ] && [ -z "$$ffprobe" ]; then \
-		printf "$(RED)FAIL: video assets are present but ffprobe is not installed; the audio/data-track check cannot run.$(NC) Install ffmpeg.\n"; \
-		exit 1; \
+		$(call die,video assets present but ffprobe is not installed; the audio/data-track check cannot run. Install ffmpeg.); \
 	fi; \
 	if [ -n "$$ffprobe" ]; then \
 		for v in $(ASSET_VIDEOS); do \
@@ -484,15 +300,12 @@ verify-media: ## Read-only release gate: FAIL if committed media still carries G
 PACKAGE          := teensy-sos-review.zip
 PACKAGE_MANIFEST := SHA256SUMS.txt
 PACKAGE_COMMIT   := SOURCE_COMMIT.txt
-# Patterns that must NOT appear in the finished archive. The self-check fails on any.
 PACKAGE_JUNK := \.DS_Store|__MACOSX|\.claude/|\.idea/|\.iml$$|settings\.local|\.pio/|\.build-host/|\.exe$$|vendor/platformio/|\.tar\.gz$$|\.git/|\.zip$$
 
+.PHONY: package
 package: ## Build the review archive (tracked files + per-file SHA256SUMS.txt) at committed HEAD
 	@rm -f $(PACKAGE) $(PACKAGE).sha256 $(PACKAGE_MANIFEST) $(PACKAGE_COMMIT)
-	@if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
-		printf "$(RED)Not a git repository.$(NC) 'make package' archives tracked files via git; run it inside the repo.\n"; \
-		exit 1; \
-	fi
+	@git rev-parse --is-inside-work-tree >/dev/null 2>&1 || $(call die,Not a git repository. 'make package' archives tracked files via git; run it inside the repo.)
 	@# Fail closed on a dirty tree: the archive reflects committed HEAD, while the
 	@# media-hygiene gate (make verify-media) inspects the WORKING TREE. Requiring a
 	@# clean tree guarantees the bytes that were verified are the bytes packaged.
@@ -503,12 +316,7 @@ package: ## Build the review archive (tracked files + per-file SHA256SUMS.txt) a
 		printf "or override deliberately with: make ALLOW_DIRTY=1 package\n"; \
 		exit 1; \
 	fi
-	@# Per-file manifest, hashed from the COMMITTED HEAD blobs (never the working tree), so it
-	@# always matches the archived content even if the working tree is dirty. Embedded IN the
-	@# archive so the whole-zip checksum also covers it. SOURCE_COMMIT.txt records the commit
-	@# so recipients can identify the source revision without a .git database in the archive.
-	@# Exclude any export-ignored paths so the manifest matches what
-	@# `git archive` actually places in the zip; otherwise `shasum -c` fails on absent files.
+	@# Per-file manifest, hashed from the COMMITTED HEAD blobs (never the working tree).
 	@git ls-tree -r --name-only HEAD | sort \
 		| git check-attr --stdin export-ignore \
 		| sed -n 's/: export-ignore: unspecified$$//p' | while IFS= read -r f; do \
@@ -534,8 +342,6 @@ package: ## Build the review archive (tracked files + per-file SHA256SUMS.txt) a
 	else \
 		printf "  clean: source, docs, sanitized media + $(PACKAGE_MANIFEST) + $(PACKAGE_COMMIT); LICENSE present\n"; \
 	fi
-	@# Whole-zip checksum sidecar, delivered ALONGSIDE the zip (a package cannot contain its
-	@# own checksum). Two-level integrity: this proves the zip; SHA256SUMS.txt proves each file.
 	@rev="$$(git rev-parse HEAD 2>/dev/null)"; \
 	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(PACKAGE)" > "$(PACKAGE).sha256"; \
 	elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$(PACKAGE)" > "$(PACKAGE).sha256"; \
@@ -547,40 +353,26 @@ package: ## Build the review archive (tracked files + per-file SHA256SUMS.txt) a
 	fi
 
 # =============================================================================
-# Tooling
+# Aggregate clean + rebuild. Board/builder fragments extend clean:: via `::`.
 # =============================================================================
-check-tools: ## Report availability of the toolchain
-	@printf "Platform      : %b (host-test exe suffix '%s')\n" "$(HOST_OS)" "$(EXE)"
-	@printf "PlatformIO    : %b\n" "$(if $(PIO),$(PIO),$(RED)not found$(NC) - pipx install platformio)"
-	@printf "arduino-cli   : %b\n" "$(if $(ARDUINO_CLI),$(ARDUINO_CLI),$(RED)not found$(NC) - brew install arduino-cli; only for 'make arduino-*')"
-	@printf "C++ (host)    : %b (%s)\n" "$(shell command -v $(CXX) 2>/dev/null || echo '$(RED)not found$(NC)')" "$(CXX)"
-	@printf "teensy_loader : %b\n" "$(if $(TEENSY_LOADER),$(TEENSY_LOADER),$(RED)not found$(NC) - only needed for 'make flash' (air-gap path))"
-	@printf "Debugger      : %b\n" "$(shell command -v $(DEBUGGER) 2>/dev/null || echo '$(RED)not found$(NC) - $(DEBUGGER); only for make debug-host, see DEBUGGING.md')"
-	@printf "PlantUML      : %b\n" "$(if $(PLANTUML),$(PLANTUML),$(RED)not found$(NC) - brew install plantuml or set PLANTUML_JAR; only for 'make diagrams')"
-	@printf "Typst         : %b\n" "$(if $(TYPST),$(TYPST),$(RED)not found$(NC) - brew install typst; only for 'make specs')"
-	@printf "exiftool      : %b\n" "$(if $(EXIFTOOL),$(EXIFTOOL),$(RED)not found$(NC) - brew install exiftool; only for 'make sanitize-media')"
-	@printf "ffmpeg        : %b\n" "$(if $(FFMPEG),$(FFMPEG),$(RED)not found$(NC) - brew install ffmpeg; only for 'make sanitize-media' video)"
+.PHONY: clean rebuild
+clean:: ## Remove build artifacts (host tests; each fragment removes its own)
+	@printf "$(YELLOW)Cleaning build artifacts...$(NC)\n"
+	rm -rf $(HOST_BUILD)
 
-check-pio:
-	@if [ -z "$(PIO)" ]; then \
-		printf "$(RED)PlatformIO not found.$(NC) Install it: pipx install platformio (or brew install platformio).\n"; \
-		exit 1; \
-	fi
+rebuild: clean build ## Clean, then build the firmware with the selected builder
 
-# On Windows, PlatformIO unpacks packages via os.path.relpath, which raises
-# "Paths don't have the same drive" when the project-local core dir and Windows
-# TEMP live on different drives - e.g. a checkout on a mapped/shared drive (W:)
-# while TEMP is on C:. This guard warns loudly before any pio package operation;
-# it never blocks. It is inert on macOS/Linux and on a same-drive Windows checkout.
-check-drive:
-ifeq ($(HOST_OS),Windows)
-	@core="$$(cygpath -w '$(abspath $(PIO_VENDOR))' 2>/dev/null)"; \
-	tmp="$$(cygpath -w "$${TEMP:-$${TMP:-C:\\Windows\\Temp}}" 2>/dev/null)"; \
-	cd=$$(printf '%.1s' "$$core" | tr '[:lower:]' '[:upper:]'); \
-	td=$$(printf '%.1s' "$$tmp"  | tr '[:lower:]' '[:upper:]'); \
-	if [ -n "$$cd" ] && [ -n "$$td" ] && [ "$$cd" != "$$td" ]; then \
-		printf "$(RED)$(BOLD)!! Cross-drive PlatformIO build: core on $$cd: but TEMP on $$td:.$(NC)\n"; \
-		printf "$(YELLOW)   PlatformIO may abort package unpack with \"Paths don't have the same drive\".$(NC)\n"; \
-		printf "$(YELLOW)   Fix: check out the project on the same drive as TEMP (usually C:).$(NC)\n"; \
-	fi
+# Reference/equivalence check: build with each shipped builder via recursive make
+# (each sub-make selects one builder, so the generic `build` never collides).
+# Only defined when 2+ builders ship. Size/image match is DIAGNOSTIC, not proof of
+# functional equivalence (that needs the on-hardware smoke test).
+ifneq (,$(and $(filter platformio,$(BUILDERS)),$(filter arduino,$(BUILDERS))))
+.PHONY: compare-builds build-all
+compare-builds: ## Build with every shipped builder (diagnostic equivalence check)
+	@printf "$(BOLD)Comparing builds across builders: $(BUILDERS)$(NC)\n"
+	$(MAKE) --no-print-directory BUILDER=platformio build
+	$(MAKE) --no-print-directory BUILDER=arduino build
+	@printf "$(GREEN)Both builders built.$(NC) Size/image match is diagnostic, not proof of functional equivalence.\n"
+
+build-all: compare-builds ## Alias for compare-builds (back-compat)
 endif
