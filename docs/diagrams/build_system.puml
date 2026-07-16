@@ -11,7 +11,7 @@ title Modular build system\nEach builder fragment realizes one verb-first target
 ' THE CONTRACT: every builder fragment provides exactly these targets.
 ' Adding a build tool means realizing this interface - nothing else.
 ' ===========================================================================
-interface "<<target contract>>\nbuild-<tool>\nupload-<tool>\nmonitor-<tool>\nclean-<tool>\n(+ check-tools:: line)" as Contract #FFFDE7
+interface "<<target contract>>\nbuild-<tool>  ·  upload-<tool>\nmonitor-<tool>  ·  clean-<tool>\ncheck-<tool>  (build prereq)\nHEX_<tool>  (built .hex path)\n(+ check-tools:: line)" as Contract #FFFDE7
 
 ' ===========================================================================
 ' ROOT: common logic only. Selects a BUILDER and aliases the generic verbs.
@@ -51,8 +51,9 @@ Stm32   ..|> Contract : realizes (later)
 ' --- the root selects one and aliases the generic verbs to it ------------
 Root ..> Contract : aliases generic verbs\nto -$(BUILDER)
 
-' --- the board flash consumes the selected builder's .hex ----------------
-Board ..> Contract : HEX ?= $(HEX_$(BUILDER))\n(air-gap flash)
+' --- the root resolves HEX ?= $(HEX_$(BUILDER)); the board flash consumes it
+Root  ..> Board : HEX ?= $(HEX_$(BUILDER))
+Board ..> Contract : flash uses $(HEX)\n(air-gap)
 
 note right of Stm32
   Extension point: drop in a fragment that

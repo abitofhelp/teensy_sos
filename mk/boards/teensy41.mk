@@ -5,8 +5,9 @@
 # path: burn a prebuilt .hex with the standalone Teensy loader - NO build tool
 # and NO network. This is the cross-domain path: build the .hex on a connected
 # machine, transfer only the small ASCII .hex across the software bridge, and
-# flash it inside the enclave. The .hex itself comes from whichever BUILDER built
-# it (each builder sets HEX ?= its own output); override with HEX=/path.
+# flash it inside the enclave. Each builder exports HEX_<builder>; the root resolves
+# HEX ?= $(HEX_$(BUILDER)) to the selected builder's output, which this target
+# consumes. Override with HEX=/path to flash any prebuilt image.
 # =============================================================================
 
 BOARD_MCU     := TEENSY41

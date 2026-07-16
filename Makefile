@@ -314,6 +314,10 @@ verify-media: ## Read-only release gate: FAIL if committed media still carries G
 PACKAGE          := teensy-sos-review.zip
 PACKAGE_MANIFEST := SHA256SUMS.txt
 PACKAGE_COMMIT   := SOURCE_COMMIT.txt
+# Defensive only: `package` archives git-tracked files, and every build/cache dir
+# below is gitignored, so these patterns should never match. They guard against a
+# builder that later tracks an artifact; the builder-specific names (.pio/,
+# vendor/platformio/) are harmless in a subset that omits that builder.
 PACKAGE_JUNK := \.DS_Store|__MACOSX|\.claude/|\.idea/|\.iml$$|settings\.local|\.pio/|\.build-host/|\.exe$$|vendor/platformio/|\.tar\.gz$$|\.git/|\.zip$$
 
 .PHONY: package
@@ -378,14 +382,18 @@ clean-host: ## Remove host-test artifacts (.build-host)
 
 rebuild: clean build ## Clean, then build with the selected builder
 
-# Reference/equivalence check: build with every shipped builder (they have distinct
-# build-<builder> targets, so no recursion or collision). Only defined when 2+
-# builders ship. Size/image match is DIAGNOSTIC, not proof of functional equivalence
-# (that needs the on-hardware smoke test).
-ifneq (,$(and $(filter platformio,$(BUILDERS)),$(filter arduino,$(BUILDERS))))
+# Reference/equivalence check: build with every present builder (they have distinct
+# build-<builder> targets, so no recursion or collision). The count-based prereq
+# ($(word 2,...) is non-empty iff 2+ builders) keeps this a pure drop-in: a new
+# builder participates with no edit here, and a single-builder subset degrades to a
+# friendly no-op instead of a dangling target. Size/image match is DIAGNOSTIC, not
+# proof of functional equivalence (that needs the on-hardware smoke test).
 .PHONY: compare-builds build-all
-compare-builds: $(addprefix build-,$(BUILDERS)) ## Build with every shipped builder (diagnostic equivalence check)
-	@printf "$(GREEN)Built with: $(BUILDERS).$(NC) Size/image match is diagnostic, not proof of functional equivalence.\n"
+compare-builds: $(if $(word 2,$(BUILDERS)),$(addprefix build-,$(BUILDERS))) ## Build with every present builder and compare image sizes (needs 2+ builders)
+	@if [ -z "$(word 2,$(BUILDERS))" ]; then \
+		printf "$(YELLOW)compare-builds needs 2+ builders; only '$(BUILDERS)' present - nothing to compare.$(NC)\n"; \
+	else \
+		printf "$(GREEN)Built with: $(BUILDERS).$(NC) Size/image match is diagnostic, not proof of functional equivalence.\n"; \
+	fi
 
 build-all: compare-builds ## Alias for compare-builds (back-compat)
-endif

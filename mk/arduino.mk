@@ -87,6 +87,7 @@ upload-arduino: build-arduino ## Build, then flash the connected Teensy via Ardu
 		"$(ARDUINO_SKETCH)"
 
 monitor-arduino: ## Open the Arduino CLI serial monitor (dynamic port; override ARDUINO_PORT=...)
+	$(call need,ARDUINO_CLI)
 	@port="$(ARDUINO_PORT)"; \
 	[ -n "$$port" ] || { printf "$(RED)No Teensy port detected.$(NC) Pass ARDUINO_PORT=...\n"; exit 1; }; \
 	$(ARDUINO_CLI) monitor -p "$$port"

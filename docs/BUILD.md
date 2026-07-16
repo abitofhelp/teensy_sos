@@ -20,11 +20,31 @@ The `Makefile` holds only common logic (host detection, colors, the `BUILDER`
 selector, and the generic verb aliases). Each build tool is a self-contained
 **fragment** under `mk/` that is auto-discovered and included:
 
-- `mk/arduino.mk`, `mk/platformio.mk` — one per builder; each defines the same
-  verb-first **target contract** (`build-<tool>`, `upload-<tool>`,
-  `monitor-<tool>`, `clean-<tool>`, plus a `check-tools` line it appends).
+- `mk/arduino.mk`, `mk/platformio.mk` — one per builder; each realizes the same
+  **target contract** (below).
 - `mk/boards/teensy41.mk` — board-owned, build-tool-agnostic concerns (the
   air-gap `flash` target), consuming the `.hex` from whichever builder ran.
+
+### The builder contract
+
+A builder fragment `mk/<tool>.mk` is a drop-in: define these and the root wires it
+in with no edits to the root or the other fragments. To add a build tool (e.g. an
+STM32 CLI later), copy an existing fragment and provide:
+
+| Obligation | Purpose |
+|---|---|
+| `build-<tool>` | Compile the firmware. Should depend on `check-<tool>`. |
+| `upload-<tool>` | Build, then flash a connected board. |
+| `monitor-<tool>` | Open the serial monitor. Guard the tool first (`$(call need,<TOOL>)`). |
+| `clean-<tool>` | Remove that builder's build output. |
+| `check-<tool>` | Verify the toolchain is present/usable; wired as a `build-<tool>` prerequisite. Give it a `##` help line when it does validation worth running standalone (as `check-arduino` does). |
+| `HEX_<tool> := …` | Path to the built `.hex`. The root resolves `HEX ?= $(HEX_$(BUILDER))`, which the board's `flash` consumes. |
+| `check-tools::` line | Append one `$(call report,<TOOL>)` so `make check-tools` covers this builder. |
+
+The generic verbs (`build`, `upload`, `monitor`, `clean`) alias to `-$(BUILDER)`;
+`clean` and `check-tools` aggregate every present builder automatically. Anything
+that has no cross-tool analog (e.g. PlatformIO's offline cache — `pio-prime`,
+`pio-bundle`, `build-offline`) stays builder-namespaced and out of the contract.
 
 `BUILDER` selects which fragment the generic verbs bind to — `make build` runs
 `build-$(BUILDER)`. It defaults to `platformio` when present, otherwise the first
