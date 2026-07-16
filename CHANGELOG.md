@@ -13,6 +13,54 @@ below are grouped by the commit type that produced them (`feat`, `fix`, `docs`,
 
 _Nothing yet._
 
+## [2.0.0] - 2026-07-16
+
+Modularizes the build so a build tool can be added or dropped without touching
+shared logic, and renames the per-tool targets to a consistent **verb-first**
+scheme. The target rename is a breaking change to the public `make` interface,
+hence the major version bump. No source, library, or runtime behavior changed —
+both frontends still build the same firmware (`FLASH code:9384`).
+
+### Changed — BREAKING
+
+- **Verb-first, builder-suffixed target names.** The build-tool targets are now
+  `build-<tool>` / `upload-<tool>` / `monitor-<tool>` / `clean-<tool>` (e.g.
+  `build-arduino`, `build-platformio`), and the generic `build` / `upload` /
+  `monitor` / `clean` alias to the selected `BUILDER`. Renames from 1.0.0:
+  `arduino-build` → `build-arduino`, `arduino-upload` → `upload-arduino`,
+  `arduino-clean` → `clean-arduino`, `arduino-check` → `check-arduino`,
+  `diagrams-clean` → `clean-diagrams`.
+  There are **no deprecation aliases** — update any scripts that call the old
+  names.
+- **`build-all` is now `compare-builds`** (with `build-all` kept as a thin
+  alias): it builds every present builder and reports that the image sizes match
+  as a diagnostic, not as proof of functional equivalence.
+
+### Build
+
+- **Modular Makefile.** Common logic lives in the root `Makefile`; each build
+  tool is a self-contained fragment under `mk/` (`mk/arduino.mk`,
+  `mk/platformio.mk`) and board-specific concerns under `mk/boards/`
+  (`mk/boards/teensy41.mk`). Fragments are auto-discovered, so dropping a
+  fragment removes its builder with no other edits — the mechanism the RTX
+  (PlatformIO-free) delivery relies on.
+- **`BUILDER` selector.** `BUILDER` chooses which fragment the generic verbs
+  target; it auto-defaults to `platformio` when present, otherwise the first
+  builder found, so the same root works on the full tree and on an
+  arduino-only subset. An unknown `BUILDER` fails loudly with the list of
+  present builders.
+- **Aggregated `check-tools` and `clean`.** Each fragment appends its own tool
+  check and clean step, so `make check-tools` and `make clean` cover exactly
+  the builders present.
+
+### Documentation
+
+- Documented the modular build system and the full builder contract
+  (`build-`/`upload-`/`monitor-`/`clean-<tool>`, `check-<tool>`, `HEX_<tool>`,
+  the `check-tools::` line) in `docs/BUILD.md`, added a `build_system` component
+  diagram, and updated the README layout and command references to the verb-first
+  names.
+
 ## [1.0.0] - 2026-07-14
 
 First public release: a clean-room, proprietary-free starter/reference project that
@@ -60,5 +108,6 @@ built on a hexagonal (ports & adapters) / DDD / Clean hybrid architecture in C++
 - **Arduino IDE** support is planned for a future release.
 - **Windows/MSYS2** is implemented and pending its own validation.
 
-[Unreleased]: https://github.com/abitofhelp/teensy_sos/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/abitofhelp/teensy_sos/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/abitofhelp/teensy_sos/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/abitofhelp/teensy_sos/releases/tag/v1.0.0

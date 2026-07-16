@@ -77,7 +77,7 @@ hardware.
   current-limiting resistors, and a breadboard — wiring in [`docs/HARDWARE.md`](docs/HARDWARE.md).
 - **PlatformIO CLI:** `pipx install platformio` (or `brew install platformio`).
 - **Arduino CLI:** `brew install arduino-cli` plus the Teensy core (`teensy:avr`) —
-  `make arduino-check` confirms the setup; install steps are in [`docs/BUILD.md`](docs/BUILD.md).
+  `make check-arduino` confirms the setup; install steps are in [`docs/BUILD.md`](docs/BUILD.md).
 
 ## Quick start
 
@@ -98,12 +98,14 @@ make debug-host    # debug the domain/app logic natively (see docs/DEBUGGING.md)
 **Arduino CLI** (second frontend, GNU C++20 against the canonical library):
 
 ```sh
-make arduino-check   # verify arduino-cli, the Teensy core, and the board
-make arduino-build   # compile the sketch (FQBN teensy:avr:teensy41)
-make arduino-upload  # build + flash the connected Teensy (dynamic port)
+make check-arduino    # verify arduino-cli, the Teensy core, and the board
+make build-arduino    # compile the sketch (FQBN teensy:avr:teensy41)
+make upload-arduino   # build + flash the connected Teensy (dynamic port)
 ```
 
-Build both frontends at once with `make build-all`. Then watch the RGB LED blink
+The generic `make build` / `make upload` target whichever `BUILDER` is selected
+(PlatformIO by default; `make BUILDER=arduino build`). Build both frontends and
+compare their image sizes with `make compare-builds`. Then watch the RGB LED blink
 SOS in red / green / blue.
 
 ## Building in restricted networks
@@ -133,7 +135,10 @@ re-checks all committed media for residual GPS/owner/serial metadata as a pre-sh
 
 ```
 platformio.ini          Pinned platform (teensy@5.2.0), C++20, no exceptions/RTTI
-Makefile                Both CLI frontends + offline cache + air-gap flash + docs + tests
+Makefile                Common logic + BUILDER selector + generic verb aliases (build/upload/...)
+mk/arduino.mk           Arduino CLI builder fragment (build-arduino / upload-arduino / ...)
+mk/platformio.mk        PlatformIO builder fragment (build-platformio / ... + offline cache)
+mk/boards/teensy41.mk   Board-owned, build-tool-agnostic air-gap flash (teensy_loader)
 lib/TeensySos/          Canonical implementation (hexagonal layers, header-only) shared by both frontends
 src/main.cpp            PlatformIO composition root (thin: wires the library)
 arduino/teensy_sos/     Arduino CLI composition root (thin sketch: wires the same library)

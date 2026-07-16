@@ -1,0 +1,67 @@
+@startuml build_system
+!theme plain
+skinparam linetype ortho
+skinparam nodesep 55
+skinparam ranksep 90
+skinparam componentStyle rectangle
+
+title Modular build system\nEach builder fragment realizes one verb-first target contract;\nthe root binds the generic verbs to the selected BUILDER
+
+' ===========================================================================
+' THE CONTRACT: every builder fragment provides exactly these targets.
+' Adding a build tool means realizing this interface - nothing else.
+' ===========================================================================
+interface "<<target contract>>\nbuild-<tool>  ·  upload-<tool>\nmonitor-<tool>  ·  clean-<tool>\ncheck-<tool>  (build prereq)\nHEX_<tool>  (built .hex path)\n(+ check-tools:: line)" as Contract #FFFDE7
+
+' ===========================================================================
+' ROOT: common logic only. Selects a BUILDER and aliases the generic verbs.
+' ===========================================================================
+component "Makefile (root)" as Root #FFE0B2 {
+}
+note bottom of Root
+  Common logic only: host detection, colors,
+  helper macros, and the **BUILDER selector**.
+  Generic verbs are one-line aliases:
+    build  -> build-$(BUILDER)
+    upload -> upload-$(BUILDER)   (etc.)
+  include $(wildcard mk/boards/*.mk) $(wildcard mk/*.mk)
+end note
+
+' ===========================================================================
+' BUILDER FRAGMENTS: one per build tool, auto-discovered from mk/*.mk.
+' ===========================================================================
+package "mk/  (builder fragments)" as Builders #FFF3E0 {
+  component "mk/platformio.mk\n(default; + offline cache)" as Pio
+  component "mk/arduino.mk\n(GNU C++20 CLI)" as Arduino
+  component "mk/stm32.mk\n(future)" as Stm32 #EEEEEE
+}
+
+' ===========================================================================
+' BOARD FRAGMENT: build-tool-agnostic, board-owned targets.
+' ===========================================================================
+package "mk/boards/" as Boards #E3F2FD {
+  component "teensy41.mk\nflash (air-gap, teensy_loader)" as Board
+}
+
+' --- realizations: each fragment provides the contract -------------------
+Pio     ..|> Contract : realizes
+Arduino ..|> Contract : realizes
+Stm32   ..|> Contract : realizes (later)
+
+' --- the root selects one and aliases the generic verbs to it ------------
+Root ..> Contract : aliases generic verbs\nto -$(BUILDER)
+
+' --- the root resolves HEX ?= $(HEX_$(BUILDER)); the board flash consumes it
+Root  ..> Board : HEX ?= $(HEX_$(BUILDER))
+Board ..> Contract : flash uses $(HEX)\n(air-gap)
+
+note right of Stm32
+  Extension point: drop in a fragment that
+  realizes the contract and it is picked up
+  automatically - no edits to the root or the
+  other fragments. Remove a fragment (e.g. the
+  PlatformIO-free RTX subset) and its builder
+  simply disappears; BUILDER re-defaults.
+end note
+
+@enduml
