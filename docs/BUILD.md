@@ -14,6 +14,26 @@ restriction, from the normal open-network flow to the fully air-gapped one; the
 Arduino CLI frontend is documented in its own section after them. **Arduino IDE
 support is planned and not yet validated.**
 
+## Modular build system
+
+The `Makefile` holds only common logic (host detection, colors, the `BUILDER`
+selector, and the generic verb aliases). Each build tool is a self-contained
+**fragment** under `mk/` that is auto-discovered and included:
+
+- `mk/arduino.mk`, `mk/platformio.mk` — one per builder; each defines the same
+  verb-first **target contract** (`build-<tool>`, `upload-<tool>`,
+  `monitor-<tool>`, `clean-<tool>`, plus a `check-tools` line it appends).
+- `mk/boards/teensy41.mk` — board-owned, build-tool-agnostic concerns (the
+  air-gap `flash` target), consuming the `.hex` from whichever builder ran.
+
+`BUILDER` selects which fragment the generic verbs bind to — `make build` runs
+`build-$(BUILDER)`. It defaults to `platformio` when present, otherwise the first
+builder found, so the same root works on the full tree and on a subset with a
+fragment removed (`make BUILDER=arduino build` overrides it). Adding a build tool
+(e.g. an STM32 CLI later) is dropping in `mk/stm32.mk` that realizes the same
+contract — no edits to the root or the other fragments. See the
+[build-system diagram](diagrams/build_system.svg).
+
 ## Host unit tests (independent of all build paths — no board, no toolchain)
 
 Only a C++20 compiler is needed:

@@ -135,7 +135,10 @@ re-checks all committed media for residual GPS/owner/serial metadata as a pre-sh
 
 ```
 platformio.ini          Pinned platform (teensy@5.2.0), C++20, no exceptions/RTTI
-Makefile                Both CLI frontends + offline cache + air-gap flash + docs + tests
+Makefile                Common logic + BUILDER selector + generic verb aliases (build/upload/...)
+mk/arduino.mk           Arduino CLI builder fragment (build-arduino / upload-arduino / ...)
+mk/platformio.mk        PlatformIO builder fragment (build-platformio / ... + offline cache)
+mk/boards/teensy41.mk   Board-owned, build-tool-agnostic air-gap flash (teensy_loader)
 lib/TeensySos/          Canonical implementation (hexagonal layers, header-only) shared by both frontends
 src/main.cpp            PlatformIO composition root (thin: wires the library)
 arduino/teensy_sos/     Arduino CLI composition root (thin sketch: wires the same library)
