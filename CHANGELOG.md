@@ -13,7 +13,7 @@ below are grouped by the commit type that produced them (`feat`, `fix`, `docs`,
 
 _Nothing yet._
 
-## [2.0.0] - 2026-07-15
+## [2.0.0] - 2026-07-16
 
 Modularizes the build so a build tool can be added or dropped without touching
 shared logic, and renames the per-tool targets to a consistent **verb-first**
@@ -52,6 +52,14 @@ both frontends still build the same firmware (`FLASH code:9384`).
 - **Aggregated `check-tools` and `clean`.** Each fragment appends its own tool
   check and clean step, so `make check-tools` and `make clean` cover exactly
   the builders present.
+
+### Documentation
+
+- Documented the modular build system and the full builder contract
+  (`build-`/`upload-`/`monitor-`/`clean-<tool>`, `check-<tool>`, `HEX_<tool>`,
+  the `check-tools::` line) in `docs/BUILD.md`, added a `build_system` component
+  diagram, and updated the README layout and command references to the verb-first
+  names.
 
 ## [1.0.0] - 2026-07-14
 
